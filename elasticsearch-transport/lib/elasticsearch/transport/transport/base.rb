@@ -165,8 +165,9 @@ module Elasticsearch
         #
         def __log(method, path, params, body, url, response, json, took, duration)
           sanitized_url = url.to_s.gsub(/\/\/(.+):(.+)@/, '//' + '\1:' + SANITIZED_PASSWORD +  '@')
+          body_size = body ? body.length+1 : 0
           logger.info  "#{method.to_s.upcase} #{sanitized_url} " +
-                       "[status:#{response.status}, request:#{sprintf('%.3fs', duration)}, query:#{took}]"
+                       "[status:#{response.status}, request:#{sprintf('%.3fs', duration)}, query:#{took}]. body_size: #{body_size}"
           logger.debug "> #{__convert_to_json(body)}" if body
           logger.debug "< #{response.body}"
         end
@@ -246,6 +247,7 @@ module Elasticsearch
 
           begin
             tries     += 1
+            body_size = body ? body.length+1 : 0
             connection = get_connection or raise Error.new("Cannot get new connection from pool.")
 
             if connection.connection.respond_to?(:params) && connection.connection.params.respond_to?(:to_hash)
@@ -253,7 +255,9 @@ module Elasticsearch
             end
 
             url        = connection.full_url(path, params)
-
+            
+            logger.info("Performing request to #{url}. body_size: #{body_size}")
+            
             response   = block.call(connection, url)
 
             connection.healthy! if connection.failures > 0
@@ -263,12 +267,14 @@ module Elasticsearch
 
           rescue Elasticsearch::Transport::Transport::ServerError => e
             if @retry_on_status.include?(response.status)
-              logger.warn "[#{e.class}] Attempt #{tries} to get response from #{url}" if logger
-              logger.debug "[#{e.class}] Attempt #{tries} to get response from #{url}" if logger
+              logger.warn "[#{e.class}] Attempt #{tries} to get response from #{url}. body_size: #{body_size}" if logger
+              logger.debug "[#{e.class}] Attempt #{tries} to get response from #{url}. body_size: #{body_size}" if logger
+
               if tries <= max_retries
                 retry
               else
-                logger.fatal "[#{e.class}] Cannot get response from #{url} after #{tries} tries" if logger
+                logger.fatal "[#{e.class}] Cannot get response from #{url} after #{tries} tries. body_size: #{body_size}" if logger
+                
                 raise e
               end
             else
@@ -276,21 +282,24 @@ module Elasticsearch
             end
 
           rescue *host_unreachable_exceptions => e
-            logger.error "[#{e.class}] #{e.message} #{connection.host.inspect}" if logger
+            logger.error "[#{e.class}] #{e.message} #{connection.host.inspect}. body_size: #{body_size}" if logger
 
             connection.dead!
 
             if @options[:reload_on_failure] and tries < connections.all.size
-              logger.warn "[#{e.class}] Reloading connections (attempt #{tries} of #{connections.all.size})" if logger
+              logger.warn "[#{e.class}] Reloading connections (attempt #{tries} of #{connections.all.size}). body_size: #{body_size}" if logger
+
               reload_connections! and retry
             end
 
             if @options[:retry_on_failure]
-              logger.warn "[#{e.class}] Attempt #{tries} connecting to #{connection.host.inspect}" if logger
+              logger.warn "[#{e.class}] Attempt #{tries} connecting to #{connection.host.inspect}. body_size: #{body_size}" if logger
+
               if tries <= max_retries
                 retry
               else
-                logger.fatal "[#{e.class}] Cannot connect to #{connection.host.inspect} after #{tries} tries" if logger
+                logger.fatal "[#{e.class}] Cannot connect to #{connection.host.inspect} after #{tries} tries. body_size: #{body_size}" if logger
+
                 raise e
               end
             else
@@ -298,7 +307,8 @@ module Elasticsearch
             end
 
           rescue Exception => e
-            logger.fatal "[#{e.class}] #{e.message} (#{connection.host.inspect if connection})" if logger
+            logger.fatal "[#{e.class}] #{e.message} (#{connection.host.inspect if connection}). body_size: #{body_size}" if logger
+
             raise e
 
           end #/begin
